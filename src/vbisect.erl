@@ -2,7 +2,7 @@
 
 -module(vbisect).
 
--export([from_orddict/1, from_gb_tree/1, to_gb_tree/1, find/2, find_geq/2]).
+-export([from_orddict/1, from_gb_tree/1, to_gb_tree/1, find/2, find_geq/2, foldl/3, foldr/3, to_orddict/1, merge/3]).
 
 -define(MAGIC, "vbis").
 -type key() :: binary().
@@ -13,6 +13,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
+-spec from_gb_tree(gb_tree()) -> bindict().
 from_gb_tree({Count,Node}) when Count =< 16#ffffffff ->
     {_BinSize,IOList} = encode_gb_node(Node),
     erlang:iolist_to_binary([ <<?MAGIC,  Count:32/unsigned >> | IOList ]).
@@ -49,13 +50,15 @@ to_gb_node( << KeySize:16, Key:KeySize/binary,
      to_gb_node(Smaller),
      to_gb_node(Bigger)}.
 
+-spec find(Key::key(), Dict::bindict()) ->
+                  { ok, value() } | error.
 find(Key, <<?MAGIC, _:32, Binary/binary>>) ->
     find_node(byte_size(Key), Key, Binary).
 
 find_node(KeySize, Key, <<HereKeySize:16, HereKey:HereKeySize/binary,
-                            BinSizeSmaller:32, _:BinSizeSmaller/binary,
-                            ValueSize:32, Value:ValueSize/binary,
-                            _/binary>> = Bin) ->
+                          BinSizeSmaller:32, _:BinSizeSmaller/binary,
+                          ValueSize:32, Value:ValueSize/binary,
+                          _/binary>> = Bin) ->
     if
         Key < HereKey ->
             Skip = 6 + HereKeySize,
@@ -69,36 +72,88 @@ find_node(KeySize, Key, <<HereKeySize:16, HereKey:HereKeySize/binary,
             {ok, Value}
     end;
 
-find_node(_, _, _) ->
-    none.
+find_node(_, _, <<>>) ->
+    error.
+
+to_orddict(BinDict) ->
+    foldr(fun(Key,Value,Acc) ->
+                  [{Key,Value}|Acc]
+          end,
+          [],
+          BinDict).
+
+merge(Fun, BinDict1, BinDict2) ->
+    OD1 = to_orddict(BinDict1),
+    OD2 = to_orddict(BinDict2),
+    OD3 = orddict:merge(Fun, OD1, OD2),
+    from_orddict(OD3).
+
+%% @doc Find largest KV smaller than or equal to key.
+%% This is good for an inner node where key is the smallest key
+%% in the child node.
 
 -spec find_geq(Key::binary(), Binary::binary()) ->
-                            none
-                          | {ok, Value::binary()}
-                          | {ok, Key::binary(), Value::binary()}.
+                      none | {ok, Key::key(), Value::value()}.
 
 find_geq(Key, <<?MAGIC, _:32, Binary/binary>>) ->
     find_geq_node(byte_size(Key), Key, Binary, none).
+
+find_geq_node(_, _, <<>>, Else) ->
+    Else;
 
 find_geq_node(KeySize, Key, <<HereKeySize:16, HereKey:HereKeySize/binary,
                               BinSizeSmaller:32, _:BinSizeSmaller/binary,
                               ValueSize:32, Value:ValueSize/binary,
                               _/binary>> = Bin, Else) ->
     if
-        Key < HereKey ->
-            Skip = 6 + HereKeySize,
-            << _:Skip/binary, Smaller:BinSizeSmaller/binary, _/binary>> = Bin,
-            find_geq_node(KeySize, Key, Smaller, {ok, HereKey, Value});
+        HereKey > Key ->
+            if Else =:= none ->
+                    Skip = 6 + HereKeySize,
+                    << _:Skip/binary, Smaller:BinSizeSmaller/binary, _/binary>> = Bin,
+                    find_geq_node(KeySize, Key, Smaller, Else);
+               true ->
+                    Else
+            end;
         HereKey < Key ->
             Skip = 10 + HereKeySize + BinSizeSmaller + ValueSize,
             << _:Skip/binary, Bigger/binary>> = Bin,
-            find_geq_node(KeySize, Key, Bigger, Else);
+            find_geq_node(KeySize, Key, Bigger, {ok, HereKey, Value});
         true ->
-            {ok, Value}
-    end;
+            {ok, HereKey, Value}
+    end.
 
-find_geq_node(_, _, _, Else) ->
-    Else.
+-spec foldl(fun((Key::key(), Value::value(), Acc::term()) -> term()), term(), bindict()) ->
+                   term().
+foldl(Fun, Acc, <<?MAGIC, _:32, Binary/binary>>) ->
+    foldl_node(Fun, Acc, Binary).
+
+foldl_node(_Fun, Acc, <<>>) ->
+    Acc;
+
+foldl_node(Fun, Acc, <<KeySize:16, Key:KeySize/binary,
+                       BinSizeSmaller:32, Smaller:BinSizeSmaller/binary,
+                       ValueSize:32, Value:ValueSize/binary,
+                       Bigger/binary>>) ->
+    Acc1 = foldl_node(Fun, Acc, Smaller),
+    Acc2 = Fun(Key, Value, Acc1),
+    foldl_node(Fun, Acc2, Bigger).
+
+
+-spec foldr(fun((Key::key(), Value::value(), Acc::term()) -> term()), term(), bindict()) ->
+                   term().
+foldr(Fun, Acc, <<?MAGIC, _:32, Binary/binary>>) ->
+    foldr_node(Fun, Acc, Binary).
+
+foldr_node(_Fun, Acc, <<>>) ->
+    Acc;
+
+foldr_node(Fun, Acc, <<KeySize:16, Key:KeySize/binary,
+                       BinSizeSmaller:32, Smaller:BinSizeSmaller/binary,
+                       ValueSize:32, Value:ValueSize/binary,
+                       Bigger/binary>>) ->
+    Acc1 = foldr_node(Fun, Acc, Bigger),
+    Acc2 = Fun(Key, Value, Acc1),
+    foldr_node(Fun, Acc2, Smaller).
 
 
 from_orddict(OrdDict) ->
@@ -110,7 +165,7 @@ speed_test_() ->
     {timeout, 600,
      fun() ->
              Start = 100000000000000,
-             N = 10000,
+             N = 100000,
              Keys = lists:seq(Start, Start+N),
              KeyValuePairs = lists:map(fun (I) -> {<<I:64/integer>>, <<255:8/integer>>} end,
                                        Keys),
