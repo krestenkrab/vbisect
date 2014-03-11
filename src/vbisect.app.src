@@ -1,12 +1,10 @@
 {application, vbisect,
  [
-  {description, ""},
-  {vsn, "1"},
-  {registered, []},
-  {applications, [
-                  kernel,
-                  stdlib
-                 ]},
-  {mod, { vbisect_app, []}},
+  {id,  "vbisect"},
+  {vsn, "0.1.0"},
+  {description,  "Vbisect binary dictionary library"},
+  {modules,      [vbisect],
+  {applications, [kernel, stdlib]},
+  {registered,   []},
   {env, []}
  ]}.
